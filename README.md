@@ -3,10 +3,10 @@
 让**斐讯悟空M1 空气检测仪**（原厂固件）脱离已经死掉的官方云，在本地跑起来，并把数据接进 Home Assistant。
 
 > Run a Phicomm Wukong M1 air detector (stock firmware) fully offline by impersonating
-> the dead `aircat.phicomm.com` server. Includes a targeted DNS/ARP hijack, the fake
-> server and an HA MQTT integration. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the
-> reverse-engineered protocol — especially the **direction-dependent `Length` field**,
-> which is what makes brightness control actually work.
+> the dead `aircat.phicomm.com` server. One container does both the DNS/ARP hijack and the
+> fake server. See [docs/PROTOCOL.md](docs/PROTOCOL.md) for the reverse-engineered protocol
+> — especially the **direction-dependent `Length` field**, which is what makes brightness
+> control actually work.
 
 ---
 
@@ -24,6 +24,8 @@ WiFi 图标闪烁，屏幕停在初始化状态。
 
 ## 架构
 
+只有一个容器（外加你本来就有的 MQTT broker）：
+
 ```
         ┌──────────────┐
         │  悟空M1      │  开机 -> 解析 aircat.phicomm.com -> 连 :9000
@@ -31,32 +33,35 @@ WiFi 图标闪烁，屏幕停在初始化状态。
         └──────┬───────┘
                │ ① DNS 查询被拦截（ARP 欺骗把网关指向本机）
                ▼
-     ┌───────────────────┐
-     │ m1-dns-redirect   │  只拦截 aircat.phicomm.com，其余转发真上游
-     └─────────┬─────────┘
-               │ ② 解析结果 = 本机
-               ▼
-     ┌───────────────────┐
-     │ aircat-fake       │  伪装 :9000，收报文 -> 解析 -> 发 MQTT
-     └─────────┬─────────┘
-               │ ③ MQTT
-               ▼
-     ┌───────────────────┐
-     │ Home Assistant    │  传感器 + 屏幕亮度灯 + 数据停更告警
-     └───────────────────┘
+     ┌─────────────────────────────────────┐
+     │ aircat-fake（单容器）                │
+     │  ├ m1_dns_redirect.py  后台          │
+     │  │   只拦截 aircat.phicomm.com，     │
+     │  │   其余转发真上游                  │
+     │  └ aircat_server.py    前台          │
+     │      伪装 :9000，收报文 -> MQTT      │
+     └──────────────┬──────────────────────┘
+                    │ ② MQTT
+                    ▼
+          ┌───────────────────┐
+          │ Home Assistant    │  传感器 + 亮度灯 + 停更告警
+          └───────────────────┘
 ```
 
-只有两个容器，就够跑起来了。
+**为什么两个进程放一个容器**：DNS 劫持需要 `NET_RAW`/`NET_ADMIN`，独立容器更"干净"，
+但这个容器只监听内网 :9000、跑的是自己的代码、不对外暴露，权衡下来少一个容器更省心。
+如果你更看重隔离，把 `m1_dns_redirect.py` 拆成独立 service 即可（环境变量原样搬过去）。
 
 ## 目录
 
 ```
-docker-compose.yml                          两个 service，一条命令起全套
+docker-compose.yml                          一个 service，一条命令起全套
 scripts/aircat_server.py                    假 aircat 服务器（纯标准库，自带极简 MQTT 客户端）
 scripts/m1_dns_redirect.py                  定向 ARP + DNS 劫持，只针对一台设备
 data/                                       运行时产物（aircat.log），已在 .gitignore 里
 homeassistant/configuration-snippet.yaml    HA 的传感器 + 屏幕亮度灯 + 停更告警
 docs/PROTOCOL.md                            逆向出来的协议细节
+tests/e2e_test.py                           端到端自测，不需要真实设备
 ```
 
 ## 部署
@@ -71,7 +76,6 @@ docs/PROTOCOL.md                            逆向出来的协议细节
 ### 1. 找到设备的 MAC 和 IP
 
 路由器 DHCP 客户端列表里找 OUI 为 **`b0:f8:93`**（MXCHIP/庆科 WiFi 模块）的设备。
-也可以先只起 aircat 服务，它会把收到的报文头打到日志里。
 
 ### 2. 改配置
 
@@ -79,15 +83,13 @@ docs/PROTOCOL.md                            逆向出来的协议细节
 git clone https://github.com/yjzsg/phicomm-m1-aircat-local.git
 cd phicomm-m1-aircat-local
 ip -br link                    # 看连局域网的网卡名，填到 IFACE
-vim docker-compose.yml         # 把 CHANGE_ME 和 aabbccddeeff 全换掉
+vim docker-compose.yml         # 把 CHANGE_ME / aabbccddeeff / eth0 / 192.168.1. 全换掉
 ```
-
-要改的一共 6 处：
 
 | 位置 | 改成 |
 |---|---|
 | `MQTT_PASS` | 你的 MQTT 密码 |
-| `aabbccddeeff`（四处：三个 topic + `M1_MAC`） | 你设备的 MAC |
+| `aabbccddeeff`（四处） | 你设备的 MAC |
 | `IFACE` | 服务器上连局域网的网卡名 |
 | `M1_IP` / `GW_IP` / `FAKE_IP` | 设备 IP / 网关 IP / 本机 IP |
 
@@ -95,15 +97,26 @@ vim docker-compose.yml         # 把 CHANGE_ME 和 aabbccddeeff 全换掉
 
 ```bash
 docker compose up -d
-docker compose logs -f aircat
+docker compose logs -f
 ```
 
-看到 `aircat fake server starting on 0.0.0.0:9000` 就对了。
+日志里应该同时看到两种输出：
+
+```
+[dns] 2026-.. === zM1 dns redirect start: iface=eth0 ...
+2026-.. === aircat fake server starting on 0.0.0.0:9000 ===
+```
 
 ### 4. 给 M1 断电重启
 
-它开机后会解析到我们的服务器并开始上报，`docker compose logs -f aircat` 里
-应该每 3 秒左右出现一条 `json={...}`。
+它开机后会解析到我们的服务器并开始上报，日志里应该每 3 秒左右出现一条 `json={...}`：
+
+```
+[dns] DNS 223.5.5.5 <- M1: aircat.phicomm.com type=1
+[dns]   -> 本地应答 192.168.1.6
+2026-.. CONNECT from ('192.168.1.54', 37930)
+2026-..   json={'humidity': '55.5', 'temperature': '23.4', ...}
+```
 
 ### 5. 接入 Home Assistant
 
@@ -111,6 +124,16 @@ docker compose logs -f aircat
 把 `aabbccddeeff` 全部换成你的 MAC，重启 HA。
 
 得到 5 个实体（温度 / 湿度 / PM2.5 / 甲醛 / 屏幕亮度），外加一条数据停更告警自动化。
+
+### 6. 自测（可选）
+
+不需要真实设备，用模拟客户端验证服务器行为：
+
+```bash
+MQTT_PASS=你的密码 python3 tests/e2e_test.py
+```
+
+它用测试端口 19000 + `testrepo/` 前缀的主题，不会干扰线上设备。
 
 ## 协议要点
 
@@ -157,23 +180,43 @@ sleep 配置     -> 28+56+6 = 90 = 0x5a
 
 ### 设备停止上报（最常见的坑）
 
-**现象**：`ss -tn | grep 9000` 显示 TCP 连接还在，但日志里不再有 `json=` 帧，
-上报频率从 3 秒退化到几分钟或完全停止。
+**现象**：`ss -tn | grep 9000` 显示 TCP 连接还在，但日志里不再有 `json=` 帧。
 
 **原因**：给设备发过**长度字段错误**的报文，固件解析器失步了。
 这是全局状态，重连 TCP 不会复位。
 
-**处理**：**给 M1 断电重启**。然后检查是不是有代码在发长度不对的报文。
+**处理**：**给 M1 断电重启**。
 
-配置里的「数据停更告警」自动化就是为这个场景准备的 —— 超过 10 分钟没数据会发
-HA 通知。它用的是 HA 实体自带的 `last_updated`，不需要额外容器。
+配置里的「数据停更告警」自动化就是为这个场景准备的 —— 超过 10 分钟没数据会发 HA 通知。
+它用的是 HA 实体自带的 `last_updated`，不需要额外容器。
 
 ### WiFi 图标一直闪
 
 说明设备还没连上服务器。检查：
-1. `m1-dns-redirect` 是否在跑（这个容器停了设备就解析不到域名）
+1. 容器是否在跑（DNS 劫持停了设备就解析不到域名）
 2. `IFACE` 填对了没有
 3. 设备和服务器是否真在同一网段
+
+### 日志里出现 `MQTT reader stopped`
+
+正常，那是 broker 重连。脚本自带保活线程（每 20 秒 PINGREQ + 断线重订阅）。
+但如果**频繁**出现，检查是不是有另一个实例用了同一个 `MQTT_CLIENT_ID` ——
+同 id 会让 broker 互相踢连接，发布落在重连空窗期会丢消息。
+
+## 环境变量
+
+全部有合理默认值，只有部署相关的需要改：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AIRCAT_PORT` | `9000` | 监听端口（改这个可以并存多实例/自测） |
+| `DATA_DIR` | `/data` | 日志目录 |
+| `M1_MAC` | `aabbccddeeff` | 设备 MAC，用于拼报文头 |
+| `MQTT_CLIENT_ID` | `aircat-fake-<端口>` | MQTT 客户端 id，**必须唯一** |
+| `MQTT_HOST/PORT/USER/PASS` | — | broker 连接 |
+| `MQTT_TOPIC_HA/STATE/SET/RAW` | — | 主题 |
+| `IFACE` / `M1_IP` / `GW_IP` / `FAKE_IP` / `UPSTREAM_DNS` | — | DNS 劫持相关 |
+| `TARGET_DOMAIN` | `aircat.phicomm.com` | 要拦截的域名 |
 
 ## 已知限制
 
@@ -181,6 +224,8 @@ HA 通知。它用的是 HA 实体自带的 `last_updated`，不需要额外容�
 - **ARP 劫持需要二层可达**：跨网段、AP 隔离的环境用不了
 - **屏幕亮度无法读取**：设备从不上报当前亮度，HA 里的状态是「我们发过什么就记什么」
 - **甲醛单位**：设备原始值是 `hcho/1000`，这里按 mg/m³ 上报
+- **raw socket 抓包有 CPU 开销**：实测约 1.5% 单核（网卡上所有包都要过一遍用户态）。
+  流量大的环境可以挂 BPF 过滤器让内核先筛，本仓库暂未实现
 
 ## 参考
 
