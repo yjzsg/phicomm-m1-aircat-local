@@ -74,8 +74,66 @@ def checksum(data: bytes) -> int:
     return (~s) & 0xFFFF
 
 
+def attach_bpf(sock, m1_ip: str) -> bool:
+    """只让内核把「来自 M1 的 UDP」交给用户态，其余直接丢。
+
+    不加过滤器时，raw socket 会收到网卡上所有帧再由 Python 解析 ——
+    在主网卡上就是整台机器的流量，实测占 2.8~3.8% 单核。
+    加上之后 TCP（占大头）在内核里就被丢掉了。
+
+    帧布局（无 VLAN 标签）：
+        [0:14]  以太网头
+        [14:34] IP 头
+        偏移 23 = IP 协议号（17 = UDP）
+        偏移 26 = 源 IP
+
+    返回 False 表示挂载失败（调用方继续运行，只是费点 CPU）。
+    """
+    try:
+        import ctypes
+        import socket as _socket
+        import struct as _struct
+
+        class SockFilter(ctypes.Structure):
+            _fields_ = [("code", ctypes.c_ushort), ("jt", ctypes.c_ubyte),
+                        ("jf", ctypes.c_ubyte), ("k", ctypes.c_uint32)]
+
+        class SockFprog(ctypes.Structure):
+            _fields_ = [("len", ctypes.c_ushort),
+                        ("filter", ctypes.POINTER(SockFilter))]
+
+        LD_B_ABS = 0x30      # ldb [k]
+        LD_W_ABS = 0x20      # ld  [k]
+        JEQ_K = 0x15         # jeq #k, jt, jf
+        RET_K = 0x06         # ret #k
+
+        # 包数据按大端解释，常量也要按大端取
+        m1_be = _struct.unpack("!I", _socket.inet_aton(m1_ip))[0]
+
+        prog = [
+            SockFilter(LD_B_ABS, 0, 0, 23),      # 0: ldb [23]  -> ip->ip_p
+            SockFilter(JEQ_K, 0, 3, 17),         # 1: 非 UDP -> 跳到 5（丢）
+            SockFilter(LD_W_ABS, 0, 0, 26),      # 2: ld  [26]  -> ip->ip_src
+            SockFilter(JEQ_K, 0, 1, m1_be),      # 3: 非 M1  -> 跳到 5（丢）
+            SockFilter(RET_K, 0, 0, 0x40000),    # 4: ret 262144（放行）
+            SockFilter(RET_K, 0, 0, 0),          # 5: ret 0（丢）
+        ]
+        arr = (SockFilter * len(prog))(*prog)
+        fprog = SockFprog(len(prog), ctypes.cast(arr, ctypes.POINTER(SockFilter)))
+        SO_ATTACH_FILTER = 26
+        # Python 的 setsockopt 只收 3 个参数：把结构体序列化成 bytes 传进去
+        sock.setsockopt(1, SO_ATTACH_FILTER,
+                        ctypes.string_at(ctypes.byref(fprog), ctypes.sizeof(fprog)))
+        return True
+    except Exception as e:  # noqa: BLE001
+        log(f"BPF 过滤器挂载失败（继续不过滤，只影响 CPU）: {e}")
+        return False
+
+
 raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_IP))
 raw.bind((IFACE, 0))
+if attach_bpf(raw, M1_IP):
+    log(f"BPF 过滤器已挂载：内核只放行来自 {M1_IP} 的 UDP")
 raw_send = socket.socket(socket.AF_PACKET, socket.SOCK_RAW)
 raw_send.bind((IFACE, 0))
 
