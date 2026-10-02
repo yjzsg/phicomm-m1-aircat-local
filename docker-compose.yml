@@ -1,0 +1,57 @@
+# 悟空M1 本地化：一个 compose 起两个服务
+#
+# 部署前必须改的地方（搜 CHANGE_ME）：
+#   MQTT_PASS    —— 你的 MQTT 密码
+#   aabbccddeeff —— 换成你自己设备的 MAC（小写、无冒号）
+#   IFACE / M1_IP / GW_IP / FAKE_IP —— 换成你的网卡和网段
+#
+# 拿 MAC：路由器 DHCP 列表里找 OUI 为 b0:f8:93（MXCHIP）的设备。
+# 拿网卡名：服务器上跑 `ip -br link`。
+
+services:
+
+  # ── 假 aircat 服务器：设备开机后会连到这里 ───────────────────
+  aircat:
+    image: python:3.12-alpine
+    container_name: aircat-fake
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      MQTT_HOST: "127.0.0.1"
+      MQTT_PORT: "1883"
+      MQTT_USER: "homeassistant"
+      MQTT_PASS: "CHANGE_ME"
+      MQTT_TOPIC_RAW: "aircat/raw"
+      # 下面三个主题要和 Home Assistant 的配置一致
+      MQTT_TOPIC_HA: "device/zm1/aabbccddeeff/sensor"
+      MQTT_TOPIC_STATE: "device/zm1/aabbccddeeff/state"
+      MQTT_TOPIC_SET: "device/zm1/aabbccddeeff/set"
+    command: python3 /scripts/aircat_server.py
+    volumes:
+      - ./scripts:/scripts:ro
+      - ./data:/data            # aircat.log 写在这里，排障时看它
+
+  # ── 定向 DNS + ARP 劫持：只骗这一台设备 ──────────────────────
+  #
+  # 悟空M1 开机要先解析 aircat.phicomm.com（已 NXDOMAIN），
+  # 所以必须把它的 DNS 查询骗到我们这边。
+  # 这个容器停了设备就解析不到域名，会一直闪 WiFi 图标。
+  m1dns:
+    image: python:3.12-alpine
+    container_name: m1-dns-redirect
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_RAW          # 发伪造 ARP 应答
+      - NET_ADMIN        # 抓原始 DNS 包
+    environment:
+      IFACE: "eth0"
+      M1_IP: "192.168.1.54"
+      M1_MAC: "aabbccddeeff"
+      GW_IP: "192.168.1.1"
+      FAKE_IP: "192.168.1.6"        # 本机 IP
+      TARGET_DOMAIN: "aircat.phicomm.com"
+      UPSTREAM_DNS: "192.168.1.1"
+    command: python3 /scripts/m1_dns_redirect.py
+    volumes:
+      - ./scripts:/scripts:ro

@@ -1,0 +1,118 @@
+# 把这部分并入 Home Assistant 的 configuration.yaml
+#
+# 把 aabbccddeeff 换成你自己设备的 MAC（小写、无冒号），要和
+# aircat 容器的 MQTT_TOPIC_* 保持一致。
+
+mqtt:
+  sensor:
+    - name: "zm1_aabbccddeeff_temperature"
+      state_topic: "device/zm1/aabbccddeeff/sensor"
+      unit_of_measurement: "°C"
+      icon: "mdi:thermometer"
+      value_template: "{{ value_json.temperature }}"
+      unique_id: "zm1_aabbccddeeff_temp"
+
+    - name: "zm1_aabbccddeeff_humidity"
+      state_topic: "device/zm1/aabbccddeeff/sensor"
+      unit_of_measurement: "%"
+      icon: "mdi:water-percent"
+      value_template: "{{ value_json.humidity }}"
+      unique_id: "zm1_aabbccddeeff_hum"
+
+    - name: "zm1_aabbccddeeff_pm25"
+      state_topic: "device/zm1/aabbccddeeff/sensor"
+      unit_of_measurement: "μg/m³"
+      icon: "mdi:blur"
+      value_template: "{{ value_json.PM25 }}"
+      unique_id: "zm1_aabbccddeeff_pm25"
+
+    - name: "zm1_aabbccddeeff_hcho"
+      state_topic: "device/zm1/aabbccddeeff/sensor"
+      unit_of_measurement: "mg/m³"
+      icon: "mdi:chemical-weapon"
+      value_template: "{{ value_json.formaldehyde }}"
+      unique_id: "zm1_aabbccddeeff_hcho"
+
+  # 屏幕亮度（调光灯）
+  #
+  # 踩坑记录 —— schema: template 的合法选项只有：
+  #     command_topic / command_on_template(必填) / command_off_template(必填)
+  #     state_topic / state_template / brightness_template
+  # 以下四个都属于 json schema，写进 template schema 会让【整段配置被拒绝】，
+  # 实体变成 unavailable、界面上按钮直接消失：
+  #     brightness_state_topic / brightness_command_topic /
+  #     brightness_scale / on_command_type
+  #
+  # 亮度方向：
+  #     读 —— brightness_template 解析 state 主题里的 value_json.brightness（设备 0-4 档）
+  #     写 —— command_on_template 里的 brightness 变量（HA 的 0-255）
+  #
+  # 另外判断 brightness 必须用 `is defined`，Jinja 里 `undefined is none` 是 False，
+  # 用 `is none` 判断会走进 else 分支报 UndefinedError。
+  light:
+    - name: "zm1_aabbccddeeff_brightness"
+      unique_id: "zm1_aabbccddeeff_light"
+      schema: template
+      command_topic: "device/zm1/aabbccddeeff/set"
+      state_topic: "device/zm1/aabbccddeeff/state"
+      command_on_template: >
+        {"mac": "aabbccddeeff"
+        {%- if brightness is defined and brightness is not none -%}
+        , "brightness": {{ ((brightness - 1) / 64) | int + 1 }}
+        {%- else -%}
+        , "brightness": 4
+        {%- endif -%}
+        }
+      command_off_template: '{"mac": "aabbccddeeff", "brightness": 0}'
+      state_template: >
+        {% if value_json.brightness == 0 %}off{% else %}on{% endif %}
+      # 设备档位 0-4 -> HA 亮度 0-255。
+      # 注意别写 * 64，4 档时会得到 256（越界）。
+      brightness_template: >
+        {{ (value_json.brightness * 63.75) | int }
+
+homeassistant:
+  customize:
+    light.zm1_aabbccddeeff_brightness:
+      friendly_name: "悟空M1 亮度"
+    sensor.zm1_aabbccddeeff_temperature:
+      friendly_name: "悟空M1 温度"
+    sensor.zm1_aabbccddeeff_humidity:
+      friendly_name: "悟空M1 湿度"
+    sensor.zm1_aabbccddeeff_pm25:
+      friendly_name: "悟空M1 PM2.5"
+    sensor.zm1_aabbccddeeff_hcho:
+      friendly_name: "悟空M1 甲醛"
+
+# ─────────────────────────────────────────────────────────────
+# 数据停更告警
+#
+# 悟空M1 收到解析不了的报文后固件解析器会失步：TCP 连接还在，
+# 但彻底停止上报，只能断电重启。这个自动化帮你发现它。
+#
+# 为什么不用独立看门狗容器：HA 里每个实体都有 last_updated，
+# 定时检查一下就够了，没必要多养一个容器去解析日志。
+#
+# 想推手机的话，把 persistent_notification 换成你的 notify 服务
+# （比如 notify.mobile_app_xxx）。
+# ─────────────────────────────────────────────────────────────
+automation:
+  - id: zm1_stale_alert
+    alias: 悟空M1 数据停更告警
+    description: 超过 10 分钟没新数据就提醒（可能是设备解析器失步，需断电重启）
+    trigger:
+      - platform: time_pattern
+        minutes: "/5"
+    condition:
+      - condition: template
+        value_template: >-
+          {{ (now() - states.sensor.zm1_aabbccddeeff_temperature.last_updated).total_seconds() > 600 }}
+    action:
+      - action: persistent_notification.create
+        data:
+          title: 悟空M1 数据停更
+          message: >-
+            已超过 10 分钟没有新数据。如果是设备解析器失步，
+            给 M1 断电重启即可恢复。
+            最后更新：{{ states.sensor.zm1_aabbccddeeff_temperature.last_updated }}
+    mode: single

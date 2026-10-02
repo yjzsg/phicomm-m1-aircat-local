@@ -1,0 +1,22 @@
+# 运行产物，不要提交
+data/*.log
+data/*.pid
+server/data/
+dns/data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 本地配置（含真实密码和 MAC，不要提交）
+docker-compose.override.yml
+*.local.yml
+.env
