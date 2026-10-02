@@ -20,3 +20,6 @@ Thumbs.db
 docker-compose.override.yml
 *.local.yml
 .env
+
+# 自测产物
+tests/_test_data/

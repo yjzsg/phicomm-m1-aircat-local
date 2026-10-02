@@ -23,7 +23,10 @@ import socketserver
 import threading
 import time
 
-LOG = "/data/aircat.log"
+# 监听端口与数据目录（默认与固件、官方部署一致，可用环境变量覆盖）
+LISTEN_PORT = int(os.environ.get("AIRCAT_PORT", "9000"))
+DATA_DIR = os.environ.get("DATA_DIR", "/data")
+LOG = os.path.join(DATA_DIR, "aircat.log")
 FRAME_END = b"\xff#END#"
 
 
@@ -532,8 +535,8 @@ class Server(socketserver.ThreadingTCPServer):
 
 
 if __name__ == "__main__":
-    os.makedirs("/data", exist_ok=True)
-    log("=== aircat fake server starting on 0.0.0.0:9000 ===")
+    os.makedirs(DATA_DIR, exist_ok=True)
+    log(f"=== aircat fake server starting on 0.0.0.0:{LISTEN_PORT} ===")
     log(f"MQTT {MQTT_HOST}:{MQTT_PORT} sensor={TOPIC_HA} state={TOPIC_STATE} set={TOPIC_SET}")
     MQTT.subscribe(TOPIC_SET, on_set)
     MQTT.subscribe("aircat/cmd", on_cmd)
@@ -545,5 +548,5 @@ if __name__ == "__main__":
     log("MQTT 保活线程已启动（每 20 秒，断线自动重连并重订阅）")
     threading.Thread(target=heartbeat_loop, daemon=True).start()
     log("主动心跳已启动（每 10 秒）")
-    with Server(("0.0.0.0", 9000), Handler) as srv:
+    with Server(("0.0.0.0", LISTEN_PORT), Handler) as srv:
         srv.serve_forever()
