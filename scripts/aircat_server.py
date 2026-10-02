@@ -26,6 +26,9 @@ import time
 # 监听端口与数据目录（默认与固件、官方部署一致，可用环境变量覆盖）
 LISTEN_PORT = int(os.environ.get("AIRCAT_PORT", "9000"))
 DATA_DIR = os.environ.get("DATA_DIR", "/data")
+# 设备 MAC（小写、无冒号）。用于拼报文头里的 mac 字段。
+DEVICE_MAC_HEX = os.environ.get("M1_MAC", "aabbccddeeff")
+DEVICE_MAC = bytes.fromhex(DEVICE_MAC_HEX)
 LOG = os.path.join(DATA_DIR, "aircat.log")
 FRAME_END = b"\xff#END#"
 
@@ -64,6 +67,9 @@ TOPIC_RAW = os.environ.get("MQTT_TOPIC_RAW", "aircat/raw")
 TOPIC_HA = os.environ.get("MQTT_TOPIC_HA", "device/zm1/aabbccddeeff/sensor")
 TOPIC_STATE = os.environ.get("MQTT_TOPIC_STATE", "device/zm1/aabbccddeeff/state")
 TOPIC_SET = os.environ.get("MQTT_TOPIC_SET", "device/zm1/aabbccddeeff/set")
+# MQTT 客户端 id：必须唯一，否则同一 broker 上的多个实例会互相踢掉。
+# 默认带上监听端口，这样自测实例（19000）不会影响线上实例（9000）。
+MQTT_CLIENT_ID = os.environ.get("MQTT_CLIENT_ID", f"aircat-fake-{LISTEN_PORT}")
 
 _log_lock = threading.Lock()
 CONNS = {}          # addr -> {"sock", "header", "lock"}
@@ -243,7 +249,7 @@ class MiniMQTT:
                     self.sock = None
 
 
-MQTT = MiniMQTT(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, "aircat-fake")
+MQTT = MiniMQTT(MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASS, MQTT_CLIENT_ID)
 
 
 def publish(topic, obj, retain=False):
@@ -473,7 +479,7 @@ class Handler(socketserver.BaseRequestHandler):
         addr = self.client_address
         log(f"CONNECT from {addr}")
         self.request.settimeout(600)
-        entry = {"sock": self.request, "header": b"\xaa" + b"\x00" * 16 + bytes.fromhex("aabbccddeeff"),
+        entry = {"sock": self.request, "header": b"\xaa" + b"\x00" * 16 + DEVICE_MAC,
                  "lock": threading.Lock()}
         with _conns_lock:
             CONNS[addr] = entry
