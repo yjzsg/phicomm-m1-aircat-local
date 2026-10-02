@@ -552,7 +552,14 @@ if __name__ == "__main__":
         log(f"启动时连接 MQTT 失败（保活线程会重试）: {e}")
     threading.Thread(target=MQTT.keepalive_loop, daemon=True).start()
     log("MQTT 保活线程已启动（每 20 秒，断线自动重连并重订阅）")
-    threading.Thread(target=heartbeat_loop, daemon=True).start()
-    log("主动心跳已启动（每 10 秒）")
+    # 主动心跳默认关闭：协议文档说设备收到心跳会暂停上报，
+    # 每 10 秒发一次会把上报节奏从 3 秒拖到 ~10 秒，长期还可能把设备拖死。
+    # 协议只要求「发完亮度指令后补一条」，那部分在 send_brightness / send_device_json 里。
+    # 需要时设 HEARTBEAT_PROACTIVE=1 打开对比。
+    if os.environ.get("HEARTBEAT_PROACTIVE", "0") == "1":
+        threading.Thread(target=heartbeat_loop, daemon=True).start()
+        log("主动心跳已启动（每 10 秒）—— 注意这会拖慢设备上报")
+    else:
+        log("主动心跳已关闭（只保留「收到帧后回一条」和「发完亮度指令后补一条」）")
     with Server(("0.0.0.0", LISTEN_PORT), Handler) as srv:
         srv.serve_forever()
