@@ -251,3 +251,60 @@ sleep 配置     -> 28+56+6 = 90 = 0x5a
 ## License
 
 MIT
+
+---
+
+## 可选：用路由器代替 ARP 欺骗（推荐）
+
+默认方案靠 **ARP 欺骗**把 M1 的流量引到本机 —— 零配置，任何路由器都能用。
+但如果你的路由器支持**给单个终端指定网关**，可以换成更干净的方式。
+
+### 原理
+
+M1 的网关指向本机后，它所有出网流量（包括发往 `223.5.5.5` 的 DNS 查询）都会
+按**正常路由**经过本机，DNS 拦截依然生效，**不再需要伪造任何 ARP 应答**。
+
+### 怎么做（以 iKuai 为例）
+
+1. **网络设置 → DHCP设置 → DHCP静态分配**，找到 M1 那条（MAC 前缀 `b0:f8:93`）
+2. 把它的**网关**改成运行本服务的机器 IP（例如 `192.168.123.6`）
+3. 改 `docker-compose.yml`：
+
+   ```yaml
+   ARP_SPOOF: "0"
+   ```
+
+4. 重启容器：
+
+   ```bash
+   docker compose up -d --force-recreate
+   ```
+
+### 验证是否生效
+
+停掉欺骗后，等 M1 下一次解析域名（约每小时一次），观察日志：
+
+```bash
+docker logs aircat-fake --since 30m | grep 'M1:'
+```
+
+- **仍有 M1 的查询** → 网关配置生效 ✅ 可以永久关闭欺骗
+- **没有查询了** → M1 没认这个网关设置，把 `ARP_SPOOF` 改回 `"1"`
+
+也可以看 M1 是否还能重连（它会定期重开 TCP 连接）：
+
+```bash
+docker logs aircat-fake | grep 'CONNECT from' | tail -5
+```
+
+### 注意
+
+- 需要本机开启 IP 转发：`sysctl net.ipv4.ip_forward=1`（多数 NAS/服务器默认已开）
+- 本机需要能正常转发（没有防火墙拦截 FORWARD 链）
+- **本机若宕机，M1 会失去网络** —— 和 ARP 欺骗方案的风险相同
+
+### 附带好处
+
+如果路由器还能给**单个终端指定 DNS**，可以把 M1 的 DNS 直接指向本机上一个
+带 `address=/aircat.phicomm.com/<本机IP>` 的 dnsmasq，那样连 DNS 拦截都不需要了
+（本仓库的 `m1_dns_redirect.py` 就可以整个删掉）。

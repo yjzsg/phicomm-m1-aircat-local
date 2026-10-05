@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""只针对悟空M1(192.168.1.54)的定向 DNS 劫持。
+"""只针对悟空M1(192.168.123.54)的定向 DNS 劫持。
 
-作用范围严格限定：只向 192.168.1.54 发送伪造 ARP 应答（声称网关 .1 在 NAS 的 MAC 上），
+作用范围严格限定：只向 192.168.123.54 发送伪造 ARP 应答（声称网关 .1 在 NAS 的 MAC 上），
 并从原始套接字截获该 IP 发出的 DNS 查询：
-  - aircat.phicomm.com  -> 192.168.1.6（假服务器）
+  - aircat.phicomm.com  -> 192.168.123.6（假服务器）
   - 其它域名            -> 转发给真实 DNS 并原样回给设备
 不使用 ip addr 占用网关地址，因此不会影响局域网内其他任何设备。
 退出时会向设备回发正确的网关 MAC，让其 ARP 缓存恢复。
@@ -17,13 +17,16 @@ import sys
 import threading
 import time
 
-IFACE = os.environ.get("IFACE", "eth0")
-M1_IP = os.environ.get("M1_IP", "192.168.1.54")
-M1_MAC_HEX = os.environ.get("M1_MAC", "aabbccddeeff")
-GW_IP = os.environ.get("GW_IP", "192.168.1.1")
-FAKE_IP = os.environ.get("FAKE_IP", "192.168.1.6")
+IFACE = os.environ.get("IFACE", "enxc84d44294124")
+M1_IP = os.environ.get("M1_IP", "192.168.123.54")
+M1_MAC_HEX = os.environ.get("M1_MAC", "b0f89324a3ac")
+GW_IP = os.environ.get("GW_IP", "192.168.123.1")
+FAKE_IP = os.environ.get("FAKE_IP", "192.168.123.6")
 TARGET = os.environ.get("TARGET_DOMAIN", "aircat.phicomm.com").lower().encode()
-UPSTREAM_DNS = os.environ.get("UPSTREAM_DNS", "192.168.1.1")
+# 是否启用 ARP 欺骗。默认开启。
+# 若已在路由器里把 M1 的网关指向本机，就不需要欺骗，可设 ARP_SPOOF=0。
+ARP_SPOOF = os.environ.get("ARP_SPOOF", "1") == "1"
+UPSTREAM_DNS = os.environ.get("UPSTREAM_DNS", "192.168.123.1")
 
 ETH_P_IP = 0x0800
 ETH_P_ARP = 0x0806
@@ -291,5 +294,9 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown)
     log(f"=== zM1 dns redirect start: iface={IFACE} nas_mac={NAS_MAC.hex()} ===")
     log(f"target={TARGET.decode()} -> {FAKE_IP}; victim={M1_IP}")
-    threading.Thread(target=arp_spoof_loop, daemon=True).start()
+    if ARP_SPOOF:
+        threading.Thread(target=arp_spoof_loop, daemon=True).start()
+        log("ARP 欺骗已启用")
+    else:
+        log("ARP 欺骗已关闭（依赖路由器下发的网关指向本机）；DNS 拦截照常")
     sniff_loop()

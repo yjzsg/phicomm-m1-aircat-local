@@ -6,6 +6,12 @@
 #   IFACE        —— 服务器上连局域网的网卡名（`ip -br link` 查看）
 #   M1_IP / GW_IP / FAKE_IP —— 设备 IP / 网关 IP / 本机 IP
 #
+# 关于 ARP_SPOOF：
+#   默认 "1"，用 ARP 欺骗把 M1 的流量引到本机，零配置可用。
+#   若你的路由器能给单个终端指定网关（如 iKuai 的 DHCP 静态分配），
+#   把 M1 的网关设成本机 IP 后改成 "0"，就不再需要欺骗 —— 更干净，
+#   见 README「可选：用路由器代替 ARP 欺骗」。
+#
 # 拿 MAC：路由器 DHCP 列表里找 OUI 为 b0:f8:93（MXCHIP/庆科）的设备。
 
 services:
