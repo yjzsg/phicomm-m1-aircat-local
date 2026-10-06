@@ -5,7 +5,7 @@
 #   aabbccddeeff —— 换成你自己设备的 MAC（小写、无冒号）
 #   IFACE        —— 服务器上连局域网的网卡名（`ip -br link` 查看）
 #   M1_IP / GW_IP / FAKE_IP —— 设备 IP / 网关 IP / 假服务器 IP
-#   CLOUD_ALIAS_IP —— 假云端用的独立 IP（不能和本机 IP 相同，见 README）
+#   （FAKE_IP 要填一个空闲 IP，不能填本机 IP —— 见 README「假云端」章节）
 #
 # 关于 ARP_SPOOF：
 #   默认 "1"，用 ARP 欺骗把 M1 的流量引到本机，零配置可用。
