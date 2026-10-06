@@ -42,7 +42,10 @@ services:
       M1_IP: "192.168.1.54"
       M1_MAC: "aabbccddeeff"
       GW_IP: "192.168.1.1"
-      FAKE_IP: "192.168.1.6"
+      # 假服务器 + 假云端用的地址。必须是「本机之外的独立 IP」——
+      # 本机 IP 的 443 通常被 NAS 的 nginx 等占用，绑不上。
+      # 配套见 systemd/m1-fake-cloud.service（加别名 IP + DNAT）
+      FAKE_IP: "192.168.1.250"
       TARGET_DOMAIN: "aircat.phicomm.com"
       # 假云端：应答设备的 /device/active 激活请求（设备不校验证书）
       FAKE_CLOUD_PORT: "9443"
