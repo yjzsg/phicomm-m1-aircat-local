@@ -254,6 +254,98 @@ MIT
 
 ---
 
+## 假云端：应答设备的激活请求（重要）
+
+M1 启动后会调用官方接口做「激活」：
+
+```
+GET https://aircat.phicomm.com/device/active?mac=<设备MAC>&productId=1
+```
+
+**实测三种应答的后果差别很大**：
+
+| 应答 | 设备行为 |
+|---|---|
+| DNS 返回 NXDOMAIN | 能上报数据，但反复重试，**约 14 小时后卡死**（需要断电才能恢复） |
+| TLS 握手失败 | **每秒重试 1~2 次**，风暴式重试 |
+| **返回 `{"code":0}`** | **不再重试**（实测 5 分钟内 0 次请求） |
+
+**好消息：设备不校验证书。** 自签证书的 TLS 握手能成功，所以可以完整伪造这个接口。
+
+### 部署
+
+本仓库的 `scripts/m1_fake_cloud.py` 就是这个小 HTTPS 服务，compose 里已经和
+假服务器一起启动（日志前缀 `[cloud]`）。
+
+还需要两件外部配置：
+
+**① 生成自签证书**（设备不校验，随便签）
+
+```bash
+cd <部署目录>/data
+openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+  -keyout cloud.key -out cloud.crt -subj "/CN=aircat.phicomm.com"
+```
+
+**② 给假云端一个独立 IP**
+
+设备的 DNS 被我们接管后，`aircat.phicomm.com` 要指向**一个能跑我们自己 HTTPS 服务的地址**。
+但本机的 443 端口通常被别的服务（NAS 的 nginx、路由器管理页等）占着，
+所以用一个**独立的别名 IP**：
+
+```
+别名 IP        192.168.123.250   （可换成你网段里任一空闲 IP）
+DNAT           192.168.123.250:443 → 本机:9443
+DNS 应答       aircat.phicomm.com → 192.168.123.250
+```
+
+仓库里的 `systemd/` 目录提供了现成脚本和单元：
+
+```bash
+sudo cp systemd/m1-fake-cloud-net.sh /usr/local/bin/
+sudo chmod 755 /usr/local/bin/m1-fake-cloud-net.sh
+sudo cp systemd/m1-fake-cloud.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now m1-fake-cloud
+```
+
+**改 IP 用环境变量**（编辑单元里的 `Environment=`）：
+
+```ini
+Environment=ALIAS_IP=192.168.123.250
+Environment=IFACE_NAME=enxc84d44294124
+Environment=TARGET_IP=192.168.123.6
+Environment=FAKE_CLOUD_PORT=9443
+```
+
+### 验证
+
+从**另一台机器**（不能是部署机本身，因为本机流量不走 DNAT）：
+
+```bash
+curl -sk "https://192.168.123.250/device/active?mac=<设备MAC>&productId=1"
+# 期望： {"code":0,"message":"success"}
+```
+
+容器日志里能看到设备的请求：
+
+```bash
+docker logs aircat-fake | grep '\[cloud\]'
+# 2026-10-06 14:20:01 激活请求 /device/active?mac=b0f89324a3ac&productId=1 -> {"code":0,...}
+```
+
+### 为什么值得做
+
+不实现假云端时，设备会一直重试激活，**约 14 小时卡死一次**，表现为：
+
+- HA 里数据停更
+- 设备不响应 ARP（`ip neigh` 显示 FAILED）
+- **只能断电重启**（软件层面无法恢复，因为它的网络栈已经死了）
+
+实现之后重试消失，设备可以长期稳定运行。
+
+---
+
 ## 可选：用路由器代替 ARP 欺骗（推荐）
 
 默认方案靠 **ARP 欺骗**把 M1 的流量引到本机 —— 零配置，任何路由器都能用。

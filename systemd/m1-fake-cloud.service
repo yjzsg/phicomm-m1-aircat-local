@@ -1,0 +1,21 @@
+[Unit]
+Description=M1 fake cloud network (alias IP + DNAT to aircat container)
+After=network-online.target docker.service
+Wants=network-online.target
+Before=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# 按你的网络改这几个值
+Environment=ALIAS_IP=192.168.123.250
+Environment=IFACE_NAME=enxc84d44294124
+Environment=TARGET_IP=192.168.123.6
+Environment=FAKE_CLOUD_PORT=9443
+
+ExecStart=/usr/local/bin/m1-fake-cloud-net.sh up
+ExecStop=/usr/local/bin/m1-fake-cloud-net.sh down
+
+[Install]
+WantedBy=multi-user.target

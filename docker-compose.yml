@@ -4,7 +4,8 @@
 #   MQTT_PASS    —— 你的 MQTT 密码
 #   aabbccddeeff —— 换成你自己设备的 MAC（小写、无冒号）
 #   IFACE        —— 服务器上连局域网的网卡名（`ip -br link` 查看）
-#   M1_IP / GW_IP / FAKE_IP —— 设备 IP / 网关 IP / 本机 IP
+#   M1_IP / GW_IP / FAKE_IP —— 设备 IP / 网关 IP / 假服务器 IP
+#   CLOUD_ALIAS_IP —— 假云端用的独立 IP（不能和本机 IP 相同，见 README）
 #
 # 关于 ARP_SPOOF：
 #   默认 "1"，用 ARP 欺骗把 M1 的流量引到本机，零配置可用。
@@ -43,11 +44,17 @@ services:
       GW_IP: "192.168.1.1"
       FAKE_IP: "192.168.1.6"
       TARGET_DOMAIN: "aircat.phicomm.com"
+      # 假云端：应答设备的 /device/active 激活请求（设备不校验证书）
+      FAKE_CLOUD_PORT: "9443"
+      FAKE_CLOUD_CERT: "/data/cloud.crt"
+      FAKE_CLOUD_KEY: "/data/cloud.key"
       UPSTREAM_DNS: "192.168.1.1"
     # DNS 劫持跑在后台（日志加 [dns] 前缀区分），服务器跑在前台。
     # 服务器退出 -> 容器退出 -> restart 策略拉起，两个进程一起恢复。
     command: >
       sh -c "python3 /scripts/m1_dns_redirect.py 2>&1 | sed 's/^/[dns] /' &
+             python3 /scripts/m1_fake_cloud.py 2>&1 | sed 's/^/[cloud] /' &
+
              exec python3 /scripts/aircat_server.py"
     volumes:
       - ./scripts:/scripts:ro

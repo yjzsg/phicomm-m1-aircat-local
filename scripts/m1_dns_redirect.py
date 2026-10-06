@@ -23,6 +23,17 @@ M1_MAC_HEX = os.environ.get("M1_MAC", "b0f89324a3ac")
 GW_IP = os.environ.get("GW_IP", "192.168.123.1")
 FAKE_IP = os.environ.get("FAKE_IP", "192.168.123.6")
 TARGET = os.environ.get("TARGET_DOMAIN", "aircat.phicomm.com").lower().encode()
+
+# 额外要「应答成本机」的域名（逗号分隔）。
+# 用于已下线但仍被固件反复查询的域名 —— 让它快速失败，避免重试耗尽资源。
+EXTRA_DOMAINS = [
+    d.strip().lower().encode()
+    for d in os.environ.get("EXTRA_DOMAINS", "").split(",")
+    if d.strip()
+]
+ANSWERED = [TARGET] + EXTRA_DOMAINS
+# 额外域名应答到哪个 IP（默认同 FAKE_IP；实验时可指向别名 IP）
+EXTRA_IP = os.environ.get("EXTRA_IP", FAKE_IP)
 # 是否启用 ARP 欺骗。默认开启。
 # 若已在路由器里把 M1 的网关指向本机，就不需要欺骗，可设 ARP_SPOOF=0。
 ARP_SPOOF = os.environ.get("ARP_SPOOF", "1") == "1"
@@ -196,8 +207,9 @@ def parse_question(dns: bytes):
 def build_dns_reply(query: bytes, qname: bytes, qtype: int, end: int):
     tid = query[:2]
     question = query[12:end]
-    if qname == TARGET and qtype == 1:  # A
-        answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + ip_bytes(FAKE_IP)
+    if qname in ANSWERED and qtype == 1:  # A
+        use_ip = FAKE_IP if qname == TARGET else EXTRA_IP
+        answer = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + ip_bytes(use_ip)
         return tid + b"\x81\x80" + struct.pack("!HHHH", 1, 1, 0, 0) + question + answer
     # 其它类型（含 AAAA）：NOERROR 但无答案，让设备回退到 A
     return tid + b"\x81\x80" + struct.pack("!HHHH", 1, 0, 0, 0) + question
@@ -227,9 +239,10 @@ def handle_dns(src_port: int, payload: bytes, queried_dns: str):
         return
     log(f"DNS {queried_dns} <- M1: {qname.decode(errors='replace')} type={qtype} (port {src_port})")
     try:
-        if qname == TARGET:
+        if qname in ANSWERED:
             reply = build_dns_reply(payload, qname, qtype, end)
-            log(f"  -> 本地应答 {FAKE_IP} (源IP伪装为 {queried_dns})" if qtype == 1
+            kind = "目标" if qname == TARGET else "额外"
+            log(f"  -> 本地应答[{kind}] {FAKE_IP} (源IP伪装为 {queried_dns})" if qtype == 1
                 else "  -> 空应答(让设备回退 A)")
         else:
             reply = forward_query(payload)
@@ -294,6 +307,9 @@ if __name__ == "__main__":
     signal.signal(signal.SIGINT, shutdown)
     log(f"=== zM1 dns redirect start: iface={IFACE} nas_mac={NAS_MAC.hex()} ===")
     log(f"target={TARGET.decode()} -> {FAKE_IP}; victim={M1_IP}")
+    if EXTRA_DOMAINS:
+        log(f"额外应答 {len(EXTRA_DOMAINS)} 个域名 -> {FAKE_IP}: "
+            + ", ".join(d.decode() for d in EXTRA_DOMAINS))
     if ARP_SPOOF:
         threading.Thread(target=arp_spoof_loop, daemon=True).start()
         log("ARP 欺骗已启用")
