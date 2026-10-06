@@ -5,7 +5,7 @@
 #   aabbccddeeff —— 换成你自己设备的 MAC（小写、无冒号）
 #   IFACE        —— 服务器上连局域网的网卡名（`ip -br link` 查看）
 #   M1_IP / GW_IP / FAKE_IP —— 设备 IP / 网关 IP / 假服务器 IP
-#   （FAKE_IP 要填一个空闲 IP，不能填本机 IP —— 见 README「假云端」章节）
+#   （FAKE_IP 填本机 IP；设备的 443 由 systemd 单元按源地址转发到假云端）
 #
 # 关于 ARP_SPOOF：
 #   默认 "1"，用 ARP 欺骗把 M1 的流量引到本机，零配置可用。
@@ -45,7 +45,10 @@ services:
       # 假服务器 + 假云端用的地址。必须是「本机之外的独立 IP」——
       # 本机 IP 的 443 通常被 NAS 的 nginx 等占用，绑不上。
       # 配套见 systemd/m1-fake-cloud.service（加别名 IP + DNAT）
-      FAKE_IP: "192.168.1.250"
+      # 本机 IP。设备的 443 流量由 systemd/m1-fake-cloud.service
+      # 按源地址 DNAT 到本容器的假云端（不影响 nginx）；
+      # 9000 端口由容器直接监听，无需转发。
+      FAKE_IP: "192.168.1.6"
       TARGET_DOMAIN: "aircat.phicomm.com"
       # 假云端：应答设备的 /device/active 激活请求（设备不校验证书）
       FAKE_CLOUD_PORT: "9443"
